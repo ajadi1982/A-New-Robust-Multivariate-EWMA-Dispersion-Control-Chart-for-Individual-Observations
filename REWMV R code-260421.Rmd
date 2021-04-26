@@ -1,0 +1,615 @@
+---
+title: "A New Robust Multivariate EWMA Dispersion Control Chart for Individual Observations"
+author: "Jimoh O. Ajadi"
+date: "15 April 2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r install-packages, include=FALSE, eval=FALSE}
+ install.packages("mvtnorm")
+ install.packages("expm") 
+ install.packages("ICSNP")
+ install.packages("caret")
+ install.packages("MVN")
+```
+
+```{r load-packages, include=FALSE, eval=TRUE, message=FALSE,warning=TRUE}
+require(mvtnorm)
+require(expm)
+require(ICSNP)
+require(caret)
+require(MVN)
+```
+
+## Call for multivariate gamma function
+multivarate gamme functions can be found in the file multvariate_gamma_function.R" 
+```{r echo=TRUE}
+source("multivarate_gamma_function.R")
+```
+
+# Comparison of two vectors
+The functions returns the element-wise maximum or minimum values between two
+vectors. The inputs for the functions are
+
+* Sided: upper-sided or lower-sided monitoring
+* V1: vector 1
+* V2: vector 2
+
+```{r load-input-data}
+comparevec=function(sided,S1,S2){
+  n=length(S1)
+  P=rep(0,n)
+  for(i in 1:n){
+    if(sided=="upper"){
+      P[i]=max(S1[i],S2[i])
+    }
+    else if(sided=="lower"){
+      P[i]=min(S1[i],S2[i])
+    }
+    
+  }
+  return(P)
+}
+
+```
+
+# Out-of-control model
+The functions returns the Phase II random vector based on Phase I estimates. The inputs for the functions are
+
+* rho: correlation between the quality characteristic 
+* p: number of correlated characteristic
+
+```{r plot case data}
+outofcontrolmodel2=function(rho,p){
+  S=matrix(0,ncol = p,nrow = p)
+  for(i in 1:p){
+    for(j in 1:p){
+      S[i,j]=rho^(abs(j-i))
+    }
+  }
+  S1=S
+  return(S1)
+}
+```
+
+# generate Phase I data
+The functions returns the Phase I estimated parameters. The inputs for the functions are
+
+* m: Phase I sample size
+* mu: In-control process mean vector
+* sig0: Incontrol Covariance Matrix
+* p: number of correlated characteristic
+* df: degree of freedom 
+* Distrib: normal, t, or gamma distributions
+* ChartType: Name of the chart
+* rate: rate of gamma distributed data
+* shape: shape of gamma distributed data
+```{r}
+fPhaseI=function(m,mu,sig0,df,p,Distrib,ChartType,rate,shape){
+  # generate data based on type of data model Distrib
+  if(Distrib=="normal"){
+      x=rmvnorm(m,mu,sig0)
+    }else if(Distrib=="t"){
+      x=mvtnorm:::rmvt(m,sigma=((df-2)/df)*sig0, df=df)
+    }else if(Distrib=="gamma"){
+      x=rmvgamma(m, shape=shape, rate=rate, corr=sig0)-rep(shape,p)
+  }
+  
+  #estimate Phase I paramters according to equations (3), (4) and (9)
+  if(ChartType=="MNSE"||ChartType=="NonParametric"){
+      res <- HR.Mest(x,maxiter = 1000)
+      m1=res$center
+      SIG=res$scatter
+      SIGinv=solve(sqrtm(SIG))
+  }else{
+      m1=colMeans(x)
+      SIG=cov(x)
+      SIGinv=solve(sqrtm(SIG))
+  }
+  
+  return(list(c(m1),SIG,SIGinv))
+}
+
+```
+
+# generate Phase II data
+The functions returns the Phase II random vector based on Phase I estimates. The inputs for the functions are
+
+* mu: In-control process mean vector
+* MU: Phase I mean vector, 
+* sig0: Incontrol Covariance Matrix
+* SIGinv: Inverse of Covariance Matrix
+* df: degree of freedom 
+* p: number of correlated characteristic
+* Distrib: normal, t, or gamma distributions
+* ChartType: Name of the chart
+* rate: rate of gamma distributed data
+* shape: shape of gamma distributed data
+```{r Phase II data}
+
+fPhaseII=function(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape){
+ 
+  # generate Phase II data based on type of data model Distrib
+  if(Distrib=="normal"){
+      x=rmvnorm(1,mu,sig0)
+    }else if(Distrib=="t"){
+      x=mvtnorm:::rmvt(1,sigma=((df-2)/df)*sig0, df=df)
+    }else if(Distrib=="gamma"){
+      x=rmvgamma(1, shape=shape, rate=rate, corr=sig0)-rep(shape,p)
+  }
+  
+  #transform Phase II paramters according to equation (10)
+  if(ChartType=="MNSE"){
+      y=spatialSign((x-MU)%*%SIGinv)
+  }else if(Distrib=="t"){
+      y=t(SIGinv%*%t(x-MU))
+  }else{
+      y=t(SIGinv%*%(x-MU))
+  }
+  return(y)
+}
+```
+
+# function to obtain the conditional ARL of the MNSE chart
+The functions returns the conditional ARL of the MNSE chart based on Phase I estimates. The inputs for the functions are
+
+* mu: In-control process mean vector
+* MU: Phase I mean vector, 
+* sig0: Incontrol Covariance Matrix
+* SIGinv: Inverse of the square root of Phase I Covariance Matrix
+* w: smoothing parameters
+* L: control constant
+* df: degree of freedom 
+* p: number of correlated characteristic
+* Distrib: normal, t, or gamma distributions
+* ChartType: Name of the chart
+* rate: rate of gamma distributed data
+* shape: shape of gamma distributed data
+```{r}
+fNParametric=function(mu,MU,sig0,SIGinv,w,UCL,Distrib,ChartType,df,rate,shape){
+  y=fPhaseII(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape)
+  S=w*t(y)%*%(y)+(1-w)*diag(p)/p
+  Q=sqrt(((2-w)/w)*sum(diag((p*S-diag(p))%*%(p*S-diag(p)))))
+  rl=1
+  while(Q<UCL){
+    rl=rl+1
+    y=fPhaseII(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape)
+    S=w*t(y)%*%(y)+(1-w)*S
+    Q=sqrt(((2-w)/w)*sum(diag((p*S-diag(p))%*%(p*S-diag(p)))))
+  }
+  return(rl)
+}
+
+```
+
+# function to obtain conditional ARL of the MEWMS chart
+The functions returns the conditional ARL of the MEWMS chart based on Phase I estimates. The inputs for the functions are
+
+* mu: In-control process mean vector
+* MU: Phase I mean vector, 
+* sig0: Incontrol Covariance Matrix
+* SIGinv: Inverse of the square root of Phase I Covariance Matrix
+* w: smoothing parameters
+* L: control constant
+* df: degree of freedom 
+* p: number of correlated characteristic
+* Distrib: normal, t, or gamma distributions
+* ChartType: Name of the chart
+* rate: rate of gamma distributed data
+* shape: shape of gamma distributed data
+```{r}
+fUCL = function(w,p,rl,L){
+  ucl = p+L*sqrt(2*p*((w/(2-w))+((2-2*w)/(2-w))*(1-w)^(2*(rl-1))))
+  return(ucl)
+}
+
+fLCL = function(w,p,rl,L){
+  lcl = p-L*sqrt(2*p*((w/(2-w))+((2-2*w)/(2-w))*(1-w)^(2*(rl-1))))
+  return(lcl)
+}
+
+fMEWMS=function(p,mu,MU,sig0,SIGinv,w,L,Distrib,ChartType,df,rate,shape){
+  rl=1
+  y=fPhaseII(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape)
+  S=w*t(y)%*%(y)+(1-w)*t(y)%*%(y)
+  SS=sum(diag(S))
+  UCL= fUCL(w,p,rl,L)
+  LCL= fLCL(w,p,rl,L)
+  while(SS>LCL & SS<UCL){
+    rl=rl+1
+    y=fPhaseII(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape)
+    S=w*t(y)%*%(y)+(1-w)*S
+    if(rl<10000){
+      SS=sum(diag(S))
+      UCL=fUCL(w,p,rl,L)
+      LCL=fLCL(w,p,rl,L)
+    }else{
+      SS=sum(diag(S))
+      UCL=SS-1
+      LCL=SS+1
+    }
+  }
+  return(rl)
+}
+
+```
+
+# fMaxMEWMV: The next functions returns the the conditional ARL of MaxMEWMV Chart.
+The functions returns the conditional ARL of the MaxMEWMV chart based on Phase I estimates. The inputs for the functions are
+
+* mu: In-control process mean vector
+* MU: Phase I mean vector, 
+* sig0: Incontrol Covariance Matrix
+* SIGinv: Inverse of the square root of Phase I Covariance Matrix
+* w: smoothing parameters
+* L: control constant
+* df: degree of freedom 
+* p: number of correlated characteristic
+* Distrib: normal, t, or gamma distributions
+* ChartType: Name of the chart
+* rate: rate of gamma distributed data
+* shape: shape of gamma distributed data
+```{r}
+fMaxMEWMV=function(p,mu,MU,sig0,SIGinv,w,UCL,Distrib,ChartType,df,rate,shape){
+  MaxDt=UCL-1;
+  rl=0
+  while(MaxDt<UCL){
+    rl=rl+1
+    y=fPhaseII(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape)
+    if(rl==1){
+      S=w*t(y)%*%(y)+(1-w)*t(y)%*%(y)
+    }
+    else{
+      S=w*t(y)%*%(y)+(1-w)*S
+    }
+    Dt1=sum((diag(S)-1)^2)
+    Dt2=sum((S[lower.tri(S)])^2)
+    suma2=w/(2-w)+2*((1-w)^(2*rl-1))/(2-w)
+    suma4=w^4/(1-(1-w)^4)+((1-w)^(4*(rl-1))*(1-(1-w)^4-w^4))/(1-(1-w)^4)
+    ExpD1=2*p*suma2
+    ExpD2=(p*(p-1)/2)*suma2
+    VarD1=p*(48*suma4+8*suma2^2)
+    VarD2=p*(p-1)*(2*p-1)*suma4+p*(p-1)*suma2^2
+    if(rl<10000){
+      MaxDt=max((Dt1-ExpD1)/sqrt(VarD1),(Dt2-ExpD2)/sqrt(VarD2))
+    }else{
+      MaxDt=UCL+1
+    }
+  }
+  return(rl)
+}
+
+```
+
+# fUREWMV: The next functions returns the conditional ARL of REWMV Chart for monitoring the upper side
+The functions returns the conditional ARL of the proposed chart based on Phase I estimates. The inputs for the functions are
+
+* mu: In-control process mean vector
+* MU: Phase I mean vector, 
+* sig0: Incontrol Covariance Matrix
+* SIGinv: Inverse of the square root of Phase I Covariance Matrix
+* w: smoothing parameters
+* UCL: upper control limit
+* df: degree of freedom 
+* p: number of correlated characteristic
+* Distrib: normal, t, or gamma distributions
+* ChartType: Name of the chart
+* rate: rate of gamma distributed data
+* shape: shape of gamma distributed data
+```{r}
+fUREWMV=function(p,mu,MU,sig0,SIGinv,w,UCL,Distrib,ChartType,df,rate,shape){
+  rl=1
+  RB=rep(-1.27,p)
+  y=fPhaseII(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape)
+  S=w*log(y*y)+(1-w)*RB
+  S1=comparevec(sided="upper",S,RB)
+  SS=sum(S1)
+  while(SS< UCL){
+    rl=rl+1
+    y=fPhaseII(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape)
+    S=w*log(y*y)+(1-w)*S
+    S1=comparevec(sided="upper",S,RB)
+    SS=sum(S1)
+  }
+  return(rl)
+}
+
+```
+
+# fLREWMV: The next functions returns the conditional ARL of REWMV Chart for monitoring the lower side
+The functions returns the conditional ARL of the proposed chart based on Phase I estimates. The inputs for the functions are
+
+* mu: In-control process mean vector
+* MU: Phase I mean vector, 
+* sig0: Incontrol Covariance Matrix
+* SIGinv: Inverse of the square root of Phase I Covariance Matrix
+* w: smoothing parameters
+* LCL: lower control limit
+* df: degree of freedom 
+* p: number of correlated characteristic
+* Distrib: normal, t, or gamma distributions
+* ChartType: Name of the chart
+* rate: rate of gamma distributed data
+* shape: shape of gamma distributed data
+```{r}
+fLREWMV=function(p,mu,MU,sig0,SIGinv,w,LCL,Distrib,ChartType,df,rate,shape){
+  rl=1
+  RB=rep(-1.27,p)
+  y=fPhaseII(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape)
+  S=w*log(y*y)+(1-w)*RB
+  S1=comparevec(sided="lower",S,RB)
+  SS=sum(S1)
+  while(SS> LCL){
+    rl=rl+1
+    y=fPhaseII(mu,MU,sig0,SIGinv,df,p,Distrib,ChartType,rate, shape)
+    S=w*log(y*y)+(1-w)*S
+    S1=comparevec(sided="lower",S,RB)
+    SS=sum(S1)
+  }
+  return(rl)
+}
+```
+
+# Function to compute the conditional ARL for each of the compared charts
+
+```{r}
+fARLComparedCharts=function(p,m,mu,sig.ic,sig.oc,simno,ChartType,Distrib,df,w,rate,shape,UCL){
+  RL=rep(0,simno)
+  estimate=fPhaseI(m,mu,sig.ic,df,p,Distrib,ChartType,rate,shape)
+  MU=estimate[[1]] 
+  SIGinv=estimate[[3]]
+  
+  for(i in 1:simno){
+    if(ChartType=="MEWMS"){
+      RL[i]=fMEWMS(p,mu,MU,sig.oc,SIGinv,w,UCL,Distrib,ChartType,df,rate,shape)
+    }else if(ChartType=="MaxMEWMV"){
+      RL[i]=fMaxMEWMV(p,mu,MU,sig.oc,SIGinv,w,UCL,Distrib,ChartType,df,rate,shape)
+    }else if(ChartType=="UREWMV"){
+      RL[i]=fUREWMV(p,mu,MU,sig.oc,SIGinv,w,UCL,Distrib,ChartType,df,rate,shape)
+    }else if(ChartType=="LREWMV"){
+      RL[i]=fLREWMV(p,mu,MU,sig.oc,SIGinv,w,UCL,Distrib,ChartType,df,rate,shape)
+    }else if(ChartType=="MNSE"){
+      RL[i]=fNParametric(mu,MU,sig.oc,SIGinv,w,UCL,Distrib,ChartType,df,rate,shape)
+    }
+  }
+  ARL=mean(RL)
+  if(any(RL==10000)){COUNT=1}else{COUNT=0}
+  return(data.frame(ARL,COUNT))
+}
+```
+
+# fPern is the function that return the percentage data that pass the Henze and Zirkler multivariate normality test at a significance level of 0.05
+
+The inputs for the functions are
+
+* mu: In-control process mean vector
+* SIG: Incontrol Covariance Matrix
+* df: degree of freedom 
+* m: number of data
+* Type: normal, t, or gamma distributions
+* rate: rate of gamma distributed data
+* shape: shape of gamma distributed data
+* simno: number of simulation
+```{r}
+fPern<-function(mu,SIG,Type,shape,rate,df,m,simno,...){
+  Normality=rep(0,simno)
+  for(i in 1:simno){
+    if(Type=='Normal'){ 
+      x=rmvnorm(m,mu,SIG)
+      result <- mvn(data = x, mvnTest = "hz")
+    }
+    else if(Type=='Gamma'){
+      x=rmvgamma(m, shape=shape, rate=rate, corr=SIG)-rep(shape,p)
+      result <- mvn(data = x, mvnTest = "hz")
+    }
+    else if(Type=='t'){
+      x=mvtnorm:::rmvt(m,sigma=((df-2)/df)*SIG, df=df)
+      result <- mvn(data = x, mvnTest = "hz")
+    } 
+    if(result$multivariateNormality$`p value`>0.05){
+      Normality[i]=1
+    }else{
+      Normality[i]=0
+    }
+  }
+  PerNormality=sum(Normality)*100/simno
+  return(PerNormality)
+}
+
+```
+
+#Table 2: Simulation for computing the percentage of Henze and Zirkler tests for multivariate normality test that do not reject at a significance level of 0.05.
+
+```{r eval=FALSE, include=FALSE}
+p=5;SIG=diag(p);mu=rep(0,p)
+m1=c(30,50,70,100,150,200,500,1000,2000,5000)
+OUTN=OUTT=OUTG=rep(0,length(m1))
+for(i in 1:length(m1)){
+  m=m1[i]
+  OUTN[i]=fPern(mu,SIG,Type='Normal',m=m,simno=10000)
+  OUTT[i]=fPern(mu,SIG,Type='t',df=15,m=m,simno=10000)
+  OUTG[i]=fPern(mu,SIG,Type='Gamma',shape=1,rate=1,m=m,simno=10000)
+}
+output=data.frame(m1,OUTN,OUTT,OUTG)
+output
+
+```
+
+# Table 3: Analysis of Phase I estimators on different distributions
+
+```{r eval=FALSE, include=FALSE}
+p=5
+simno=10000
+vM=10#c(10,25,50,75,100,125,150,200)
+Nm = length(vM)
+rate <- 1
+shape<- 16
+df=30
+Distrib=c("normal","t","gamma")
+mu=rep(0,p)
+sig.ic=diag(p)
+Estimator=c("NonParametric","Parametric")
+EstimatorType=Estimator[1]
+#Input parameter to change 
+selectedDist = Distrib[1]
+## SIMULATION
+ARL=rep(0,simno)
+VARARL=rep(0,Nm)
+for(j in c(1:Nm)){
+  m=vM[j]
+  for(i in c(1:simno)){
+    estimate=fPhaseI(m,mu,sig.ic,df,p,selectedDist,EstimatorType,rate,shape)
+    ARL[i] <-sum(diag(estimate[[2]]))
+  }
+  VARARL[j]=var(ARL[1:i])
+}  
+output=data.frame(vM,VARARL)
+output
+
+```
+
+```{r}
+fucl=function(p,w,m,ChartType){
+  if(p==2){
+    if(w==0.1){
+      if(m==50){
+        UCLMaxMEWMV=5.2;UCLREWMV=-1.22;LCLREWMV=-4.108;UCLMEWMS=2.55;UCLNP=3.034
+      }else if(m==200){
+        UCLMaxMEWMV=4.83;UCLREWMV=-1.175;LCLREWMV=-4.23;UCLMEWMS=2.475;UCLNP=2.9
+      }else if(m==2000){
+        UCLMaxMEWMV=4.6;UCLREWMV=-1.166;LCLREWMV=-4.255;UCLMEWMS=2.475;UCLNP=2.83
+      }  
+    }else if(w==0.3){
+      if(m==50){
+        UCLMaxMEWMV=7.17;UCLREWMV=0.06;LCLREWMV=-6.45;UCLMEWMS=3.338;UCLNP=2.7
+      }else if(m==200){
+        UCLMaxMEWMV=6.907;UCLREWMV=0.076;LCLREWMV=-6.54;UCLMEWMS=3.38;UCLNP=2.66
+      }else if(m==2000){
+        UCLMaxMEWMV=6.74;UCLREWMV=0.08;LCLREWMV=-6.57;UCLMEWMS=3.38;UCLNP=2.637
+      }   
+    }
+  }else if(p==5){
+    if(w==0.1){
+      if(m==50){
+        UCLMaxMEWMV=7.9;UCLREWMV=-3.542;LCLREWMV=-8.84;UCLMEWMS=3.17;UCLNP=7.21
+      }else if(m==200){
+        UCLMaxMEWMV=5.055;UCLREWMV=-3.787;LCLREWMV=-9.173;UCLMEWMS=2.638;UCLNP=6.594
+      }else if(m==2000){
+        UCLMaxMEWMV=4.21;UCLREWMV=-3.874;LCLREWMV=-9.26;UCLMEWMS=2.47;UCLNP=6.332
+      }   
+    }else if(w==0.3){
+      if(m==50){
+        UCLMaxMEWMV=9.24;UCLREWMV=-1.235;LCLREWMV=-12.38;UCLMEWMS=3.908;UCLNP=6.675
+      }else if(m==200){
+        UCLMaxMEWMV=6.62;UCLREWMV=-1.57;LCLREWMV=-12.7;0.000752;UCLMEWMS=3.26;UCLNP=6.427
+      }else if(m==2000){
+        UCLMaxMEWMV=5.9;UCLREWMV=-1.68;LCLREWMV=-12.8;UCLMEWMS=3.076;UCLNP=6.36
+      }   
+    }
+  }else if(p==25){
+    if(w==0.1){
+      if(m==50){
+        UCLMaxMEWMV=84.27;UCLREWMV=-8.82;LCLREWMV=-34.72;UCLMEWMS=20.2;UCLNP=35.5
+      }else if(m==200){
+        UCLMaxMEWMV=8;UCLREWMV=-21.1;LCLREWMV=-38.97;UCLMEWMS=4.93;UCLNP=28.34
+      }else if(m==2000){
+        UCLMaxMEWMV=3.7;UCLREWMV=-23.4;LCLREWMV=-40.5;UCLMEWMS=2.55;UCLNP=26.92
+      }   
+    }else if(w==0.3){
+      if(m==50){
+        UCLMaxMEWMV=59;UCLREWMV=-0.7;LCLREWMV=-42.2;UCLMEWMS=17.12;UCLNP=31.12
+      }else if(m==200){
+        UCLMaxMEWMV=8;UCLREWMV=-13.89;LCLREWMV=-48;UCLMEWMS=4.67;UCLNP=27.75
+      }else if(m==2000){
+        UCLMaxMEWMV=4.7;UCLREWMV=-16.4;LCLREWMV=-49.68;UCLMEWMS=2.91;UCLNP=27.16
+      }   
+    }
+  }
+  if(ChartType=="MaxMEWMV"){UCL=UCLMaxMEWMV}
+  else if(ChartType=="UREWMV"){UCL=UCLREWMV}
+  else if(ChartType=="LREWMV"){UCL=LCLREWMV}
+  else if(ChartType=="MEWMS"){UCL=UCLMEWMS}
+  else if(ChartType=="MNSE"){UCL=UCLNP}
+  return(UCL)
+}
+```
+
+## Initialization
+
+```{r echo=TRUE}
+Distrib=c("normal","t","gamma")
+## Initialization
+p=2
+l=0.3
+simnoI=10
+simnoII=10000
+sig.ic=diag(p)
+rho=0.3
+# In-control model
+sig.ic=diag(p)
+
+# Out-of-control models partial shift
+sigoc1=outofcontrolmodel2(rho=0,p)
+sigoc1[1,1]=1.2
+
+# Out-of-control models overall shift
+sigoc2=0.2*outofcontrolmodel2(rho=0.3,p)
+
+l.sig.oc=list(sig.ic,
+              sigoc1,  #This can be replace with any partial shifts in Tables 5 and 7
+              sigoc2)  #This can be replace with any overall shifts in Tables 4 and 6
+
+Nshift=length(l.sig.oc)
+vM=200#c(50,200,2000)
+Nm = length(vM)
+rate <- 1
+shape<- 16
+df=30
+Charts=c("MEWMS","MaxMEWMV","MNSE","LREWMV","UREWMV")
+mu=rep(0,p)
+
+#Input parameter to change 
+ChartType=Charts[1]
+selectedDist = Distrib[3]
+
+```
+
+# Table 4-7: SIMULATIONS
+
+
+
+```{r echo=TRUE}
+for(j in c(1:Nm)){
+  m=vM[j]
+  AARL=rep(0,Nshift)
+  COUNT=SDARL=AARL
+  UCL=fucl(p,l,m,ChartType)
+
+  for( s in c(1:Nshift)){
+    count=ARL=rep(0,simnoII)  
+    sig.oc = l.sig.oc[[s]]
+    
+    for(i in c(1:simnoII)){
+      set.seed(i)
+      arl <- fARLComparedCharts(p,m,mu,sig.ic,sig.oc,simnoI,ChartType,selectedDist,df,l,rate,shape,UCL)
+      ARL[i]=arl$ARL;count[i]=arl$COUNT
+    }
+    AARL[s]=mean(ARL[1:i])
+    SDARL[s]=sd(ARL[1:i])
+    COUNT[s]=sum(count)
+  }  
+  output=data.frame(AARL,SDARL,COUNT)
+  output
+}
+```
+
+#Output
+```{r echo=TRUE}
+output
+```
+
